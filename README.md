@@ -16,7 +16,7 @@ Edit `.env` and fill in your credentials:
 
 ```env
 # Required — your Ola Maps API key
-OLA_API_KEY=oNfKBLHD5pBKlMZoaZb5rRRRywcPfsZaxUqrwYvG
+OLA_API_KEY=OLA_API_KEY
 
 # Optional — enables OAuth (better rate limits)
 OLA_PROJECT_ID=your_project_id_here
