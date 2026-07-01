@@ -963,11 +963,6 @@ function plotAllLocations() {
     state.routeLayers = [];
   }
 
-  if (!state.originLatLng) {
-    showToast("Please select Origin Location");
-    return;
-  }
-
   // Remove old routes
   state.routeLayers.forEach((id) => {
 

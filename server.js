@@ -47,16 +47,34 @@ async function generateMapSnapshot() {
   })
   .join("&marker=");
 
-    const centerLng =
-      uploadedLocations[0].longitude;
+  const extraPoints = [
+  { latitude: 35.5, longitude: 74.0 }, // Jammu & Kashmir
+  { latitude: 11.7, longitude: 92.7 }, // Andaman & Nicobar
+  { latitude: 10.5, longitude: 72.6 }  // Lakshadweep
+];
 
-    const centerLat =
-      uploadedLocations[0].latitude;
+const allLocations = [...uploadedLocations, ...extraPoints];
 
-    const staticMapUrl =
-      `https://api.olamaps.io/tiles/v1/styles/default-light-standard/static/` +
-      `${centerLng},${centerLat},4/1200x800.png?marker=${markers}` +
-      `&api_key=${OLA_API_KEY}`;
+const latitudes = allLocations.map(
+  p => parseFloat(p.latitude)
+);
+
+const longitudes = allLocations.map(
+  p => parseFloat(p.longitude)
+);
+
+const centerLat =
+  (Math.min(...latitudes) +
+   Math.max(...latitudes)) / 2;
+
+const centerLng =
+  (Math.min(...longitudes) +
+   Math.max(...longitudes)) / 2;
+
+const staticMapUrl =
+  `https://api.olamaps.io/tiles/v1/styles/default-light-standard/static/` +
+  `${centerLng},${centerLat},5/1400x900.png?marker=${markers}` +
+  `&api_key=${OLA_API_KEY}`;
 
     const response = await axios.get(
       staticMapUrl,
