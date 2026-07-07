@@ -37,116 +37,121 @@ function buildImageUrl() {
 let cachedToken = null;
 let tokenExpiresAt = 0;
 
-// ─── Persistent Location Storage ──────────────────────────────────────────────
-const LOCATIONS_FILE = path.join(__dirname, "public", "images", "locations.json");
-
-function ensureLocationsFile() {
-  if (!fs.existsSync(LOCATIONS_FILE)) {
-    fs.writeFileSync(LOCATIONS_FILE, JSON.stringify([]));
-  }
-}
+// ─── In-Memory Location Cache (Works on Vercel) ───────────────────────────────
+let locationCache = {
+  data: [],
+  timestamp: 0,
+  CACHE_TTL: 3600000 // 1 hour in milliseconds
+};
 
 function loadLocations() {
-  try {
-    ensureLocationsFile();
-    const data = fs.readFileSync(LOCATIONS_FILE, "utf8");
-    return JSON.parse(data) || [];
-  } catch (error) {
-    console.error("Error loading locations:", error);
-    return [];
+  const now = Date.now();
+  // Return cached locations if still valid
+  if (locationCache.data.length > 0 && (now - locationCache.timestamp) < locationCache.CACHE_TTL) {
+    return locationCache.data;
   }
+  return [];
 }
 
 function saveLocations(locations) {
-  try {
-    ensureLocationsFile();
-    fs.writeFileSync(LOCATIONS_FILE, JSON.stringify(locations, null, 2));
-  } catch (error) {
-    console.error("Error saving locations:", error);
+  locationCache.data = locations;
+  locationCache.timestamp = Date.now();
+  console.log(`💾 Cached ${locations.length} locations in memory`);
+}
+
+// ─── In-Memory Image Cache ───────────────────────────────────────────────────
+let imageCache = {
+  data: null,
+  timestamp: 0,
+  CACHE_TTL: 1800000 // 30 minutes
+};
+
+function getCachedImage() {
+  const now = Date.now();
+  if (imageCache.data && (now - imageCache.timestamp) < imageCache.CACHE_TTL) {
+    return imageCache.data;
   }
+  return null;
+}
+
+function setCachedImage(imageBuffer) {
+  imageCache.data = imageBuffer;
+  imageCache.timestamp = Date.now();
 }
 
 async function generateMapSnapshot(uploadedLocations) {
 
-  if (!uploadedLocations.length) {
-    return;
+  if (!uploadedLocations || !uploadedLocations.length) {
+    console.log("⚠️ No locations to plot");
+    return null;
   }
 
   try {
+    console.log(`🗺️ Generating snapshot for ${uploadedLocations.length} locations...`);
 
-  const markers = uploadedLocations
-  .map(player => {
-    return `${player.longitude},${player.latitude}|red`;
-  })
-  .join("&marker=");
+    const markers = uploadedLocations
+      .map(player => {
+        return `${player.longitude},${player.latitude}|red`;
+      })
+      .join("&marker=");
 
-  const extraPoints = [
-  { latitude: 35.5, longitude: 74.0 }, // Jammu & Kashmir
-  { latitude: 11.7, longitude: 92.7 }, // Andaman & Nicobar
-  { latitude: 10.5, longitude: 72.6 }  // Lakshadweep
-];
+    const extraPoints = [
+      { latitude: 35.5, longitude: 74.0 }, // Jammu & Kashmir
+      { latitude: 11.7, longitude: 92.7 }, // Andaman & Nicobar
+      { latitude: 10.5, longitude: 72.6 }  // Lakshadweep
+    ];
 
-const allLocations = [...uploadedLocations, ...extraPoints];
+    const allLocations = [...uploadedLocations, ...extraPoints];
 
-const latitudes = allLocations.map(
-  p => parseFloat(p.latitude)
-);
+    const latitudes = allLocations.map(
+      p => parseFloat(p.latitude)
+    );
 
-const longitudes = allLocations.map(
-  p => parseFloat(p.longitude)
-);
+    const longitudes = allLocations.map(
+      p => parseFloat(p.longitude)
+    );
 
-const centerLat =
-  (Math.min(...latitudes) +
-   Math.max(...latitudes)) / 2;
+    const centerLat =
+      (Math.min(...latitudes) +
+       Math.max(...latitudes)) / 2;
 
-const centerLng =
-  (Math.min(...longitudes) +
-   Math.max(...longitudes)) / 2;
+    const centerLng =
+      (Math.min(...longitudes) +
+       Math.max(...longitudes)) / 2;
 
-const staticMapUrl =
-  `https://api.olamaps.io/tiles/v1/styles/default-light-standard/static/` +
-  `${centerLng},${centerLat},5/1400x900.png?marker=${markers}` +
-  `&api_key=${OLA_API_KEY}`;
+    const staticMapUrl =
+      `https://api.olamaps.io/tiles/v1/styles/default-light-standard/static/` +
+      `${centerLng},${centerLat},5/1400x900.png?marker=${markers}` +
+      `&api_key=${OLA_API_KEY}`;
+
+    console.log(`📍 Map URL: ${staticMapUrl.substring(0, 100)}...`);
+
     const response = await axios.get(
       staticMapUrl,
       {
         responseType: "arraybuffer"
       }
     );
- console.log(
-    "Generating snapshot..."
-  );
-    fs.writeFileSync(
-      path.join(
-        __dirname,
-        "public",
-        "images",
-        "player-map.png"
-      ),
-      response.data
-    );
-    console.log(
-    "Snapshot saved successfully"
-  );
 
-    console.log(
-      "✅ Map Snapshot Generated"
-    );
+    // Cache the image in memory
+    setCachedImage(response.data);
+
+    // Also try to save to /tmp for Vercel persistence
+    try {
+      const tmpImagePath = path.join("/tmp", "player-map.png");
+      fs.writeFileSync(tmpImagePath, response.data);
+      console.log("✅ Map snapshot saved to /tmp");
+    } catch (tmpError) {
+      console.log("ℹ️ Could not save to /tmp (using memory cache only)");
+    }
+
+    console.log("✅ Map Snapshot Generated Successfully");
     return buildImageUrl();
   } catch (error) {
-
-  console.error(
-    "❌ Snapshot Generation Error:",
-    error.response?.status
-  );
-
-  console.error(
-    "❌ Error Data:",
-    error.response?.data?.toString()
-  );
-
-}
+    console.error("❌ Snapshot Generation Error:", error?.response?.status || error.message);
+    console.error("❌ Error Data:", error?.response?.data?.toString());
+    return null;
+  }
 }
 
 // ─── Generate OAuth Token ─────────────────────────────────────────────────────
@@ -412,23 +417,26 @@ app.post("/api/load-locations", async (req, res) => {
       });
     }
 
-    console.log(`📥 Received ${incomingPlayers.length} players`);
+    console.log(`\n📥 Received ${incomingPlayers.length} players`);
+    console.log("📍 First location:", incomingPlayers[0]);
 
-    // Save locations persistently
+    // Save locations to memory cache
     saveLocations(incomingPlayers);
 
     console.log(
-      `✅ Total Players to Plot: ${incomingPlayers.length}`
+      `✅ Cached ${incomingPlayers.length} locations in memory`
     );
 
-   const imageUrl =
-  (await generateMapSnapshot(incomingPlayers)) || buildImageUrl();
+    // Generate map snapshot immediately
+    const imageUrl =
+      (await generateMapSnapshot(incomingPlayers)) || buildImageUrl();
 
     return res.json({
       success: true,
       totalPlayers: incomingPlayers.length,
       imageUrl,
-      version: "v2-debug",
+      message: `Successfully plotted ${incomingPlayers.length} locations`,
+      version: "v2-vercel-fixed",
     });
   } catch (error) {
     console.error("❌ Load locations error:", error);
@@ -440,50 +448,71 @@ app.post("/api/load-locations", async (req, res) => {
 });
 app.get("/api/load-locations", (req, res) => {
   const locations = loadLocations();
-  console.log(
-    "GET locations:",
-    locations.length
-  );
+  console.log(`📍 GET locations: ${locations.length} cached`);
 
-  res.json(locations);
-
+  res.json({
+    count: locations.length,
+    locations: locations,
+    cached: true
+  });
 });
 app.get(
   "/api/player-map-image",
   (req, res) => {
+    console.log("📥 Map image requested");
 
-    const imagePath =
-      path.join(
-        __dirname,
-        "public",
-        "images",
-        "player-map.png"
-      );
+    let imageData = null;
 
-    if (!fs.existsSync(imagePath)) {
+    // Try memory cache first
+    imageData = getCachedImage();
+    
+    // If not in memory cache, try /tmp
+    if (!imageData) {
+      try {
+        const tmpImagePath = path.join("/tmp", "player-map.png");
+        if (fs.existsSync(tmpImagePath)) {
+          imageData = fs.readFileSync(tmpImagePath);
+          console.log("✅ Image loaded from /tmp");
+        }
+      } catch (err) {
+        console.log("ℹ️ Image not found in /tmp");
+      }
+    } else {
+      console.log("✅ Image loaded from memory cache");
+    }
+
+    // Try public directory as fallback
+    if (!imageData) {
+      try {
+        const imagePath = path.join(
+          __dirname,
+          "public",
+          "images",
+          "player-map.png"
+        );
+        if (fs.existsSync(imagePath)) {
+          imageData = fs.readFileSync(imagePath);
+          console.log("✅ Image loaded from public directory");
+        }
+      } catch (err) {
+        console.log("ℹ️ Image not found in public directory");
+      }
+    }
+
+    if (!imageData) {
+      console.error("❌ Map snapshot not found in any cache");
       return res.status(404).json({
-        error: "Map snapshot not found"
+        error: "Map snapshot not found. Please upload locations first."
       });
     }
 
-    res.setHeader(
-      "Cache-Control",
-      "no-cache, no-store, must-revalidate"
-    );
-
-    res.setHeader(
-      "Pragma",
-      "no-cache"
-    );
-
-    res.setHeader(
-      "Expires",
-      "0"
-    );
-
-    res.sendFile(imagePath);
-
-});
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
+    res.send(imageData);
+  }
+);
 
 // ─── Default Route ────────────────────────────────────────────────────────────
 app.get("/", (req, res) => {
