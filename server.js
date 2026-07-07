@@ -38,15 +38,24 @@ let cachedToken = null;
 let tokenExpiresAt = 0;
 
 // ─── Persistent Storage Paths ───────────────────────────────────────────────
-const STORAGE_DIR = path.join(__dirname, "public", "images");
+// Use /tmp for Vercel (writable), fallback to public/images for local development
+const isProduction = process.env.VERCEL === "1";
+const STORAGE_DIR = isProduction 
+  ? "/tmp" 
+  : path.join(__dirname, "public", "images");
+
 const LOCATIONS_FILE = path.join(STORAGE_DIR, "locations.json");
 const IMAGE_FILE = path.join(STORAGE_DIR, "player-map.png");
 
 // Ensure storage directory exists
 function ensureStorageDir() {
-  if (!fs.existsSync(STORAGE_DIR)) {
-    fs.mkdirSync(STORAGE_DIR, { recursive: true });
-    console.log("📁 Created storage directory:", STORAGE_DIR);
+  try {
+    if (!fs.existsSync(STORAGE_DIR)) {
+      fs.mkdirSync(STORAGE_DIR, { recursive: true });
+      console.log("📁 Created storage directory:", STORAGE_DIR);
+    }
+  } catch (error) {
+    console.error("Error creating storage directory:", error.message);
   }
 }
 
@@ -57,12 +66,13 @@ function loadLocations() {
     if (fs.existsSync(LOCATIONS_FILE)) {
       const data = fs.readFileSync(LOCATIONS_FILE, "utf8");
       const locations = JSON.parse(data);
-      console.log(`📂 Loaded ${locations.length} locations from file`);
+      console.log(`📂 Loaded ${locations.length} locations from ${LOCATIONS_FILE}`);
       return locations;
     }
+    console.log("ℹ️ Locations file not found");
     return [];
   } catch (error) {
-    console.error("Error reading locations file:", error.message);
+    console.error("❌ Error reading locations file:", error.message);
     return [];
   }
 }
@@ -71,11 +81,24 @@ function loadLocations() {
 function saveLocations(locations) {
   try {
     ensureStorageDir();
+    
+    // Verify write permissions
+    console.log(`💾 Saving ${locations.length} locations to ${LOCATIONS_FILE}`);
+    console.log(`📍 Storage directory: ${STORAGE_DIR}`);
+    console.log(`📍 Is Production (Vercel): ${isProduction}`);
+    
+    // Test write permission
+    const testFile = path.join(STORAGE_DIR, ".write-test");
+    fs.writeFileSync(testFile, "test");
+    fs.unlinkSync(testFile);
+    console.log("✅ Write permission verified");
+    
     fs.writeFileSync(LOCATIONS_FILE, JSON.stringify(locations, null, 2));
-    console.log(`💾 Saved ${locations.length} locations to file`);
+    console.log(`✅ Successfully saved ${locations.length} locations`);
     return true;
   } catch (error) {
-    console.error("Error saving locations:", error.message);
+    console.error("❌ Error saving locations:", error.message);
+    console.error("📍 Full error:", error);
     return false;
   }
 }
@@ -149,14 +172,20 @@ async function generateMapSnapshot(uploadedLocations) {
     // Save image to file
     try {
       ensureStorageDir();
+      console.log(`💾 Attempting to save image to ${IMAGE_FILE}...`);
       fs.writeFileSync(IMAGE_FILE, response.data);
-      console.log(`✅ Image saved to ${IMAGE_FILE}`);
+      console.log(`✅ Image saved to file (${response.data.length} bytes)`);
       
       // Also cache in memory
       imageCache.data = response.data;
       imageCache.timestamp = Date.now();
+      console.log("✅ Image cached in memory");
     } catch (writeError) {
-      console.error("Error saving image:", writeError.message);
+      console.error("⚠️ Error saving image to file:", writeError.message);
+      // Still cache in memory even if file save fails
+      imageCache.data = response.data;
+      imageCache.timestamp = Date.now();
+      console.log("✅ Image cached in memory (file save failed)");
     }
 
     console.log("✅ Map generated successfully");
@@ -433,9 +462,11 @@ app.post("/api/load-locations", async (req, res) => {
       });
     }
 
-    console.log(`\n${"=".repeat(60)}`);
+    console.log(`\n${"=".repeat(70)}`);
     console.log(`📥 Received ${incomingPlayers.length} player locations`);
-    console.log("=".repeat(60));
+    console.log(`📍 Environment: ${isProduction ? "PRODUCTION (Vercel)" : "LOCAL"}`);
+    console.log(`📍 Storage Dir: ${STORAGE_DIR}`);
+    console.log("=".repeat(70));
 
     if (incomingPlayers.length === 0) {
       return res.status(400).json({
@@ -444,36 +475,52 @@ app.post("/api/load-locations", async (req, res) => {
     }
 
     // Save locations to persistent file storage
+    console.log("💾 Saving locations to file...");
     const saved = saveLocations(incomingPlayers);
 
     if (!saved) {
-      console.error("Failed to save locations");
+      console.error("❌ Failed to save locations to storage");
       return res.status(500).json({
         error: "Failed to save locations to storage",
+        details: "Unable to write to storage directory. Check server logs.",
+        storage: {
+          directory: STORAGE_DIR,
+          isProduction: isProduction
+        }
       });
     }
 
-    console.log(`\n🎯 Generating map snapshot...`);
+    console.log(`\n🎯 Generating map snapshot for ${incomingPlayers.length} locations...`);
     
     // Generate map snapshot
     const imageUrl = await generateMapSnapshot(incomingPlayers);
 
-    console.log(`\n${"=".repeat(60)}`);
+    console.log(`\n${"=".repeat(70)}`);
     console.log(`✅ SUCCESS: ${incomingPlayers.length} locations plotted`);
     console.log(`📍 Map URL: ${imageUrl}`);
-    console.log("=".repeat(60) + "\n");
+    console.log("=".repeat(70) + "\n");
 
     return res.json({
       success: true,
       totalPlayers: incomingPlayers.length,
       imageUrl: imageUrl || buildImageUrl(),
       message: `Successfully plotted ${incomingPlayers.length} locations on the map`,
+      storage: {
+        saved: true,
+        directory: STORAGE_DIR,
+        isProduction: isProduction
+      }
     });
   } catch (error) {
     console.error("❌ Load locations error:", error.message);
+    console.error("Full error:", error);
     return res.status(500).json({
       error: "Failed to load locations",
       details: error.message,
+      storage: {
+        directory: STORAGE_DIR,
+        isProduction: isProduction
+      }
     });
   }
 });
@@ -491,30 +538,39 @@ app.get(
   "/api/player-map-image",
   (req, res) => {
     console.log("📥 Map image requested");
+    console.log(`📍 Storage path: ${IMAGE_FILE}`);
+    console.log(`📍 Is Production: ${isProduction}`);
 
     let imageData = null;
 
-    // Try file first (Vercel persists files in public dir)
+    // Try file first
     try {
       if (fs.existsSync(IMAGE_FILE)) {
         imageData = fs.readFileSync(IMAGE_FILE);
-        console.log("✅ Image loaded from file");
+        console.log(`✅ Image loaded from file (${imageData.length} bytes)`);
+      } else {
+        console.log(`⚠️ Image file not found at ${IMAGE_FILE}`);
       }
     } catch (fileError) {
-      console.log("⚠️ Error reading from file:", fileError.message);
+      console.error("❌ Error reading from file:", fileError.message);
     }
 
     // Try memory cache as fallback
     if (!imageData && imageCache.data) {
       imageData = imageCache.data;
-      console.log("✅ Image loaded from memory cache");
+      console.log(`✅ Image loaded from memory cache (${imageData.length} bytes)`);
     }
 
     if (!imageData) {
-      console.error("❌ No map image found");
+      console.error("❌ No map image found anywhere");
       return res.status(404).json({
         error: "Map snapshot not found",
-        hint: "Please upload locations first using POST /api/load-locations"
+        hint: "Please upload locations first using POST /api/load-locations",
+        storage: {
+          directory: STORAGE_DIR,
+          imageFile: IMAGE_FILE,
+          isProduction: isProduction
+        }
       });
     }
 
