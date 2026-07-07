@@ -24,11 +24,49 @@ const {
   PORT = 3000,
 } = process.env;
 
+function normalizeAppUrl() {
+  const raw = (process.env.APP_URL || "https://fixed-sooty-mu.vercel.app").trim();
+  return raw.replace(/^['"]|['"]$/g, "").replace(/\/+$/, "");
+}
+
+function buildImageUrl() {
+  return `${normalizeAppUrl()}/api/player-map-image`;
+}
+
 // ─── OAuth Token Cache ────────────────────────────────────────────────────────
 let cachedToken = null;
 let tokenExpiresAt = 0;
-let uploadedLocations = [];
-async function generateMapSnapshot() {
+
+// ─── Persistent Location Storage ──────────────────────────────────────────────
+const LOCATIONS_FILE = path.join(__dirname, "public", "images", "locations.json");
+
+function ensureLocationsFile() {
+  if (!fs.existsSync(LOCATIONS_FILE)) {
+    fs.writeFileSync(LOCATIONS_FILE, JSON.stringify([]));
+  }
+}
+
+function loadLocations() {
+  try {
+    ensureLocationsFile();
+    const data = fs.readFileSync(LOCATIONS_FILE, "utf8");
+    return JSON.parse(data) || [];
+  } catch (error) {
+    console.error("Error loading locations:", error);
+    return [];
+  }
+}
+
+function saveLocations(locations) {
+  try {
+    ensureLocationsFile();
+    fs.writeFileSync(LOCATIONS_FILE, JSON.stringify(locations, null, 2));
+  } catch (error) {
+    console.error("Error saving locations:", error);
+  }
+}
+
+async function generateMapSnapshot(uploadedLocations) {
 
   if (!uploadedLocations.length) {
     return;
@@ -36,14 +74,9 @@ async function generateMapSnapshot() {
 
   try {
 
-   const markers = uploadedLocations
+  const markers = uploadedLocations
   .map(player => {
-
-    const label =
-      player.player_name.charAt(0).toUpperCase();
-
-    return `${player.longitude},${player.latitude}|red|label:${label}`;
-
+    return `${player.longitude},${player.latitude}|red`;
   })
   .join("&marker=");
 
@@ -75,7 +108,6 @@ const staticMapUrl =
   `https://api.olamaps.io/tiles/v1/styles/default-light-standard/static/` +
   `${centerLng},${centerLat},5/1400x900.png?marker=${markers}` +
   `&api_key=${OLA_API_KEY}`;
-
     const response = await axios.get(
       staticMapUrl,
       {
@@ -101,16 +133,20 @@ const staticMapUrl =
     console.log(
       "✅ Map Snapshot Generated"
     );
-
+    return buildImageUrl();
   } catch (error) {
 
-    console.error(
-      "❌ Snapshot Generation Error:",
-      error.message
-    );
+  console.error(
+    "❌ Snapshot Generation Error:",
+    error.response?.status
+  );
 
-  }
+  console.error(
+    "❌ Error Data:",
+    error.response?.data?.toString()
+  );
 
+}
 }
 
 // ─── Generate OAuth Token ─────────────────────────────────────────────────────
@@ -175,11 +211,28 @@ async function authHeaders(useOAuth = false) {
   };
 }
 
-// ─── Route: Send API Key To Frontend ──────────────────────────────────────────
+// ─── Route: Send Config To Frontend (without API key) ────────────────────────
 app.get("/api/config", (req, res) => {
+  // IMPORTANT: Never send OLA_API_KEY directly to frontend
+  // The API key should only be used on the backend to ensure it's not exposed
+  res.json({
+    projectId: OLA_PROJECT_ID,
+    mapInitialized: !!OLA_API_KEY
+  });
+});
+
+// ─── Route: Secure Map Initialization (API key stays on backend) ──────────────
+app.post("/api/init-map", (req, res) => {
+  // This endpoint validates that map API key exists and is properly configured
+  if (!OLA_API_KEY) {
+    return res.status(500).json({
+      error: "Map API key not configured on server"
+    });
+  }
+  // Only return API key for map initialization via POST request
   res.json({
     apiKey: OLA_API_KEY,
-    projectId: OLA_PROJECT_ID,
+    status: "ready"
   });
 });
 
@@ -350,54 +403,49 @@ app.get("/api/distance-matrix", async (req, res) => {
   }
 });
 app.post("/api/load-locations", async (req, res) => {
+  try {
+    const incomingPlayers = req.body;
 
-  const incomingPlayers = req.body;
-
-  incomingPlayers.forEach((player) => {
-
-    const existingPlayer =
-      uploadedLocations.find(
-        p =>
-          p.player_name === player.player_name
-      );
-
-    if (existingPlayer) {
-
-      existingPlayer.latitude =
-        player.latitude;
-
-      existingPlayer.longitude =
-        player.longitude;
-
-    } else {
-
-      uploadedLocations.push(player);
-
+    if (!Array.isArray(incomingPlayers)) {
+      return res.status(400).json({
+        error: "Expected a JSON array of players",
+      });
     }
 
-  });
+    console.log(`📥 Received ${incomingPlayers.length} players`);
 
-  console.log(
-    "Total Players:",
-    uploadedLocations.length
-  );
-  await generateMapSnapshot();
+    // Save locations persistently
+    saveLocations(incomingPlayers);
 
-  res.json({
-    success: true,
-    totalPlayers:
-      uploadedLocations.length
-  });
+    console.log(
+      `✅ Total Players to Plot: ${incomingPlayers.length}`
+    );
 
+   const imageUrl =
+  (await generateMapSnapshot(incomingPlayers)) || buildImageUrl();
+
+    return res.json({
+      success: true,
+      totalPlayers: incomingPlayers.length,
+      imageUrl,
+      version: "v2-debug",
+    });
+  } catch (error) {
+    console.error("❌ Load locations error:", error);
+    return res.status(500).json({
+      error: "Failed to load locations",
+      details: error.message,
+    });
+  }
 });
 app.get("/api/load-locations", (req, res) => {
+  const locations = loadLocations();
   console.log(
     "GET locations:",
-    uploadedLocations.length
+    locations.length
   );
 
-
-  res.json(uploadedLocations);
+  res.json(locations);
 
 });
 app.get(

@@ -812,12 +812,14 @@ if (state.map) {
   // ─── Boot ─────────────────────────────────────────────────────────────────
   async function boot() {
     try {
-      const r = await fetch('/api/config');
-      const { apiKey } = await r.json();
-      if (!apiKey) throw new Error('No API key from server');
-      state.apiKey = apiKey;
+      // Securely get API key from backend for map initialization
+      const initRes = await fetch('/api/init-map', { method: 'POST' });
+      const initData = await initRes.json();
+      
+      if (!initData.apiKey) throw new Error('Failed to initialize map - API key not available');
+      state.apiKey = initData.apiKey;
 
-      await initMap(apiKey);
+      await initMap(initData.apiKey);
 
       // Setup autocomplete
       setupAutocomplete(originInput, originSugs, (place) => {
